@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <menuitem
+        id="menu_odoo_database_manager_root"
+        name="Database Manager"
+        sequence="10"
+        groups="base.group_system"
+        web_icon="odoo_database_manager,static/description/icon.png"
+    />
+
+    <menuitem
+        id="menu_odoo_database_backup"
+        name="Database Backups"
+        parent="menu_odoo_database_manager_root"
+        action="action_odoo_database_backup"
+        sequence="10"
+        groups="base.group_system"
+    />
+
+    <menuitem
+        id="menu_odoo_database_storage"
+        name="Configuration"
+        parent="menu_odoo_database_manager_root"
+        action="action_odoo_database_storage"
+        sequence="20"
+        groups="base.group_system"
+    />
+
+</odoo>

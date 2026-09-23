@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- ==========================================================
+         STORAGE SERVICE LIST
+         ========================================================== -->
+
+    <record id="view_odoo_database_storage_list" model="ir.ui.view">
+        <field name="name">odoo.database.storage.list</field>
+        <field name="model">odoo.database.storage</field>
+        <field name="arch" type="xml">
+            <list string="Storage Services">
+                <field name="name"/>
+                <field name="service_type"/>
+                <field name="host"/>
+                <field name="port"/>
+                <field name="remote_path"/>
+                <field name="active"/>
+                <field name="connection_status"/>
+                <field name="last_test_date"/>
+            </list>
+        </field>
+    </record>
+
+
+    <!-- ==========================================================
+         STORAGE SERVICE FORM
+         ========================================================== -->
+
+    <record id="view_odoo_database_storage_form" model="ir.ui.view">
+        <field name="name">odoo.database.storage.form</field>
+        <field name="model">odoo.database.storage</field>
+        <field name="arch" type="xml">
+            <form string="Storage Service">
+                <header>
+                    <button name="action_test_connection" string="Test Connection" type="object" class="btn-primary" icon="fa-plug"/>
+                    <field name="connection_status" widget="statusbar" statusbar_visible="unknown,success,failed"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <label for="name" class="oe_edit_only"/>
+                        <h1>
+                            <field name="name" placeholder="Storage Service Name"/>
+                        </h1>
+                    </div>
+
+
+                    <!-- ==================================================
+                         GENERAL
+                         ================================================== -->
+
+                    <group>
+                        <group string="Service">
+                            <field name="service_type"/>
+                            <field name="active"/>
+                        </group>
+
+                        <group string="Connection">
+                            <field name="host" invisible="service_type == 'local'"/>
+                            <field name="port" invisible="service_type == 'local'"/>
+                        </group>
+                    </group>
+
+                    <!-- ==================================================
+                         AUTHENTICATION
+                         ================================================== -->
+
+                    <group string="Authentication" invisible="service_type == 'local' or service_type == 'nas'">
+                        <field name="username"/>
+                        <field name="password" password="True"/>
+                    </group>
+
+                    <!-- ==================================================
+                         PATH
+                         ================================================== -->
+
+                    <group string="Storage Path">
+                        <field name="local_path" invisible="service_type != 'local' and service_type != 'nas'" placeholder="C:\Backup or \\192.168.1.10\Backup"/>
+                        <field name="remote_path" invisible="service_type != 'ftp' and service_type != 'sftp'" placeholder="/backup/odoo"/>
+                    </group>
+
+                    <separator string="Connection Test"/>
+
+                    <group>
+                        <field name="connection_status" readonly="1"/>
+                        <field name="last_test_date" readonly="1"/>
+                    </group>
+
+                    <field name="connection_message" readonly="1" nolabel="1" placeholder="Connection test result..."/>
+                </sheet>
+                    <chatter>
+                        <field name="message_follower_ids"/>
+                        <field name="activity_ids"/>
+                        <field name="message_ids"/>
+                    </chatter>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_odoo_database_storage" model="ir.actions.act_window">
+        <field name="name">Storage Services</field>
+        <field name="res_model">odoo.database.storage</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+</odoo>
