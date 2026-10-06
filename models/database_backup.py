@@ -75,6 +75,17 @@ class DatabaseBackup(models.Model):
     backup_file_ids = fields.One2many('odoo.database.backup.file', 'backup_id', string='Backup Files')
     backup_count = fields.Integer(string='Backup Count', compute='_compute_backup_count')
 
+    retention_enabled = fields.Boolean(string='Enable Retention', default=True, tracking=True, help='Automatically delete old backup files based on Retention Count.')
+    retention_count = fields.Integer(string='Keep Backups', default=7, required=True, tracking=True, help='Number of latest successful backups to keep.')
+
+    @api.constrains('retention_count')
+    def _check_retention_count(self):
+        for record in self:
+            if record.retention_count < 1:
+                raise ValueError(
+                    'Retention Count must be at least 1.'
+                )
+
     @api.depends('backup_file_ids')
     def _compute_backup_count(self):
         for record in self:
@@ -86,6 +97,8 @@ class DatabaseBackup(models.Model):
         'schedule_hour',
         'schedule_minute',
         'schedule_day',
+        'retention_count',
+
     )
     def _check_schedule_values(self):
         for record in self:
@@ -105,30 +118,36 @@ class DatabaseBackup(models.Model):
                     'Day of Month must be between 1 and 31.'
                 )
 
+            if record.retention_count < 1:
+                raise ValueError(
+                    'Retention Count must be at least 1.'
+                )
+
     # ==========================================================
     # MANUAL START
     # ==========================================================
 
     def action_start(self):
         """
-        Queue backup for background processing.
+        Start backup job.
 
-        The actual backup and upload are handled
-        by the Odoo cron process.
+        The job is placed into queued state.
+        The cron scheduler will process it.
         """
 
         self.ensure_one()
 
-        if self.state in (
-            'queued',
-            'running',
-        ):
+        # ------------------------------------------------------
+        # Already active
+        # ------------------------------------------------------
+
+        if self.state in ('queued', 'running'):
 
             return {
                 'type': 'ir.actions.client',
                 'tag': 'display_notification',
                 'params': {
-                    'title': 'Backup Already Running',
+                    'title': 'Backup Already Active',
                     'message': (
                         'This backup job is already queued '
                         'or running.'
@@ -138,6 +157,10 @@ class DatabaseBackup(models.Model):
                 },
             }
 
+        # ------------------------------------------------------
+        # Validation
+        # ------------------------------------------------------
+
         if not self.database_name:
 
             return {
@@ -145,9 +168,7 @@ class DatabaseBackup(models.Model):
                 'tag': 'display_notification',
                 'params': {
                     'title': 'Backup Error',
-                    'message': (
-                        'Database name is required.'
-                    ),
+                    'message': 'Database name is required.',
                     'type': 'danger',
                     'sticky': True,
                 },
@@ -175,12 +196,13 @@ class DatabaseBackup(models.Model):
         self.write({
             'state': 'queued',
             'error_message': False,
+            'active': True,
         })
 
         self.env.cr.commit()
 
         _logger.info(
-            'Manual backup queued. '
+            'Backup job started/queued. '
             'Job=%s ID=%s Database=%s Storage=%s',
             self.name,
             self.id,
@@ -192,10 +214,209 @@ class DatabaseBackup(models.Model):
             'type': 'ir.actions.client',
             'tag': 'display_notification',
             'params': {
-                'title': 'Backup Queued',
+                'title': 'Backup Started',
                 'message': (
-                    'Backup has been queued and will be '
-                    'processed in the background.'
+                    'Backup job has been queued '
+                    'and will be processed by the scheduler.'
+                ),
+                'type': 'success',
+                'sticky': False,
+            },
+        }
+
+
+    # ==========================================================
+    # STOP BACKUP JOB
+    # ==========================================================
+
+    def action_stop(self):
+        """
+        Stop backup job.
+
+        This stops future scheduled executions.
+
+        IMPORTANT:
+            It does not forcibly terminate an already running
+            database backup/upload operation.
+
+            If _execute_backup() is currently running, the
+            current operation is allowed to finish.
+        """
+
+        self.ensure_one()
+
+        previous_state = self.state
+
+        # ======================================================
+        # ALREADY STOPPED / DRAFT
+        # ======================================================
+
+        if self.state == 'draft':
+
+            self.write({
+                'active': False,
+                'next_run': False,
+            })
+
+            self.env.cr.commit()
+
+            _logger.info(
+                'Backup job already stopped. '
+                'Job=%s ID=%s State=%s',
+                self.name,
+                self.id,
+                previous_state,
+            )
+
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': 'Backup Stopped',
+                    'message': (
+                        'Backup job is already stopped.'
+                    ),
+                    'type': 'warning',
+                    'sticky': False,
+                },
+            }
+
+        # ======================================================
+        # STOP QUEUED JOB
+        # ======================================================
+
+        if self.state == 'queued':
+
+            self.write({
+                'state': 'draft',
+                'active': False,
+                'next_run': False,
+                'error_message': False,
+            })
+
+            self.env.cr.commit()
+
+            _logger.info(
+                'Backup job stopped while queued. '
+                'Job=%s ID=%s PreviousState=%s',
+                self.name,
+                self.id,
+                previous_state,
+            )
+
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': 'Backup Stopped',
+                    'message': (
+                        'Queued backup has been stopped.'
+                    ),
+                    'type': 'success',
+                    'sticky': False,
+                },
+            }
+
+        # ======================================================
+        # STOP RUNNING JOB
+        # ======================================================
+
+        if self.state == 'running':
+
+            self.write({
+                'active': False,
+                'next_run': False,
+            })
+
+            self.env.cr.commit()
+
+            _logger.info(
+                'Backup job stop requested while running. '
+                'The current backup operation will be allowed '
+                'to finish. '
+                'Job=%s ID=%s PreviousState=%s',
+                self.name,
+                self.id,
+                previous_state,
+            )
+
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': 'Backup Stop Requested',
+                    'message': (
+                        'Backup job has been stopped for future '
+                        'executions. The current backup operation, '
+                        'if already running, will finish.'
+                    ),
+                    'type': 'warning',
+                    'sticky': False,
+                },
+            }
+
+        # ======================================================
+        # DONE / FAILED
+        # ======================================================
+
+        if self.state in ('done', 'failed'):
+
+            self.write({
+                'state': 'draft',
+                'active': False,
+                'next_run': False,
+            })
+
+            self.env.cr.commit()
+
+            _logger.info(
+                'Backup job stopped. '
+                'Job=%s ID=%s PreviousState=%s',
+                self.name,
+                self.id,
+                previous_state,
+            )
+
+            return {
+                'type': 'ir.actions.client',
+                'tag': 'display_notification',
+                'params': {
+                    'title': 'Backup Stopped',
+                    'message': (
+                        'Backup job has been stopped.'
+                    ),
+                    'type': 'success',
+                    'sticky': False,
+                },
+            }
+
+        # ======================================================
+        # FALLBACK
+        # ======================================================
+
+        self.write({
+            'state': 'draft',
+            'active': False,
+            'next_run': False,
+        })
+
+        self.env.cr.commit()
+
+        _logger.warning(
+            'Backup job stopped using fallback handler. '
+            'Job=%s ID=%s PreviousState=%s',
+            self.name,
+            self.id,
+            previous_state,
+        )
+
+        return {
+            'type': 'ir.actions.client',
+            'tag': 'display_notification',
+            'params': {
+                'title': 'Backup Stopped',
+                'message': (
+                    'Backup job has been stopped.'
                 ),
                 'type': 'success',
                 'sticky': False,
@@ -474,6 +695,24 @@ class DatabaseBackup(models.Model):
             )
 
             # ==================================================
+            # 6B. APPLY RETENTION
+            # ==================================================
+
+            try:
+
+                self._apply_retention()
+
+            except Exception:
+
+                _logger.exception(
+                    'Backup retention failed. '
+                    'Backup itself remains successful. '
+                    'Job=%s ID=%s',
+                    self.name,
+                    self.id,
+                )
+
+            # ==================================================
             # 7. UPDATE JOB
             # ==================================================
 
@@ -582,6 +821,192 @@ class DatabaseBackup(models.Model):
                     )
 
     # ==========================================================
+    # BACKUP RETENTION
+    # ==========================================================
+
+    def _apply_retention(self):
+        """
+        Apply backup retention policy.
+
+        Keeps the newest retention_count successful backups
+        belonging to this backup job.
+
+        Old backup files are deleted from the physical storage
+        first. The corresponding Odoo backup log is deleted only
+        after the physical file has been successfully removed.
+        """
+
+        self.ensure_one()
+
+        if not self.retention_enabled:
+
+            _logger.info(
+                'Backup retention disabled. '
+                'Job=%s ID=%s',
+                self.name,
+                self.id,
+            )
+
+            return True
+
+        retention_count = self.retention_count or 0
+
+        if retention_count < 1:
+
+            _logger.warning(
+                'Invalid retention count. '
+                'Job=%s ID=%s Retention=%s',
+                self.name,
+                self.id,
+                retention_count,
+            )
+
+            return False
+
+        BackupFile = self.env[
+            'odoo.database.backup.file'
+        ].sudo()
+
+        # ------------------------------------------------------
+        # GET SUCCESSFUL BACKUPS
+        # ------------------------------------------------------
+
+        backup_files = BackupFile.search(
+            [
+                ('backup_id', '=', self.id),
+                ('state', '=', 'success'),
+            ],
+            order='create_date desc, id desc',
+        )
+
+        total_backups = len(
+            backup_files
+        )
+
+        _logger.info(
+            'Retention check. '
+            'Job=%s ID=%s Total=%s Keep=%s',
+            self.name,
+            self.id,
+            total_backups,
+            retention_count,
+        )
+
+        # ------------------------------------------------------
+        # NOTHING TO DELETE
+        # ------------------------------------------------------
+
+        if total_backups <= retention_count:
+
+            _logger.info(
+                'Retention cleanup not required. '
+                'Job=%s ID=%s',
+                self.name,
+                self.id,
+            )
+
+            return True
+
+        # ------------------------------------------------------
+        # OLD BACKUPS
+        # ------------------------------------------------------
+
+        old_backup_files = backup_files[
+            retention_count:
+        ]
+
+        deleted_count = 0
+        failed_count = 0
+
+        # ------------------------------------------------------
+        # DELETE OLD BACKUPS
+        # ------------------------------------------------------
+
+        for backup_file in old_backup_files:
+
+            filename = (
+                backup_file.backup_filename
+            )
+
+            if not filename:
+
+                _logger.warning(
+                    'Backup log has no filename. '
+                    'Skipping. '
+                    'BackupFileID=%s',
+                    backup_file.id,
+                )
+
+                failed_count += 1
+
+                continue
+
+            try:
+
+                _logger.info(
+                    'Deleting old backup. '
+                    'Job=%s BackupFileID=%s Filename=%s',
+                    self.name,
+                    backup_file.id,
+                    filename,
+                )
+
+                # --------------------------------------------------
+                # DELETE PHYSICAL FILE FIRST
+                # --------------------------------------------------
+
+                StorageService.delete(
+                    storage=self.storage_id,
+                    filename=filename,
+                )
+
+                # --------------------------------------------------
+                # DELETE DATABASE LOG
+                # --------------------------------------------------
+
+                backup_file.unlink()
+
+                deleted_count += 1
+
+                _logger.info(
+                    'Old backup deleted successfully. '
+                    'Job=%s Filename=%s',
+                    self.name,
+                    filename,
+                )
+
+            except Exception as error:
+
+                failed_count += 1
+
+                _logger.exception(
+                    'Failed to delete old backup. '
+                    'Job=%s BackupFileID=%s '
+                    'Filename=%s Error=%s',
+                    self.name,
+                    backup_file.id,
+                    filename,
+                    error,
+                )
+
+        # ------------------------------------------------------
+        # RESULT
+        # ------------------------------------------------------
+
+        _logger.info(
+            'Backup retention completed. '
+            'Job=%s ID=%s '
+            'Deleted=%s Failed=%s Keep=%s',
+            self.name,
+            self.id,
+            deleted_count,
+            failed_count,
+            retention_count,
+        )
+
+        return failed_count == 0
+
+    # ==========================================================
     # GLOBAL SCHEDULER
     # ==========================================================
 
@@ -657,7 +1082,7 @@ class DatabaseBackup(models.Model):
                 (
                     'state',
                     'not in',
-                    ['queued', 'running'],
+                    ['queued'],
                 ),
             ]
         )
@@ -730,18 +1155,13 @@ class DatabaseBackup(models.Model):
         self.ensure_one()
 
         if not self.active:
-
             return False
 
         if self.schedule_type == 'manual':
-
             return False
 
-        if self.state in (
-            'queued',
-            'running',
-        ):
-
+        # Job yang sedang queued/running jangan diproses lagi
+        if self.state in ('queued', 'running'):
             return False
 
         # ======================================================
@@ -751,7 +1171,6 @@ class DatabaseBackup(models.Model):
         if self.schedule_type == '3_minutes':
 
             if not self.last_run:
-
                 return True
 
             elapsed = (
@@ -767,7 +1186,6 @@ class DatabaseBackup(models.Model):
         if self.schedule_type == 'hourly':
 
             if not self.last_run:
-
                 return True
 
             elapsed = (
@@ -782,23 +1200,30 @@ class DatabaseBackup(models.Model):
 
         if self.schedule_type == 'daily':
 
+            # Belum pernah backup
             if not self.last_run:
 
-                return (
-                    now.hour == self.schedule_hour
-                    and now.minute
-                    >= self.schedule_minute
+                target_time = now.replace(
+                    hour=self.schedule_hour,
+                    minute=self.schedule_minute,
+                    second=0,
+                    microsecond=0,
                 )
 
-            if now.date() == self.last_run.date():
+                return now >= target_time
 
+            # Sudah backup hari ini
+            if now.date() == self.last_run.date():
                 return False
 
-            return (
-                now.hour == self.schedule_hour
-                and now.minute
-                >= self.schedule_minute
+            target_time = now.replace(
+                hour=self.schedule_hour,
+                minute=self.schedule_minute,
+                second=0,
+                microsecond=0,
             )
+
+            return now >= target_time
 
         # ======================================================
         # WEEKLY
@@ -806,30 +1231,38 @@ class DatabaseBackup(models.Model):
 
         if self.schedule_type == 'weekly':
 
-            if (
-                str(now.weekday())
-                != self.schedule_weekday
-            ):
+            target_weekday = int(
+                self.schedule_weekday
+            )
 
+            # Bukan hari yang dijadwalkan
+            if now.weekday() != target_weekday:
                 return False
 
+            # Belum pernah backup
             if not self.last_run:
 
-                return (
-                    now.hour == self.schedule_hour
-                    and now.minute
-                    >= self.schedule_minute
+                target_time = now.replace(
+                    hour=self.schedule_hour,
+                    minute=self.schedule_minute,
+                    second=0,
+                    microsecond=0,
                 )
 
-            if now.date() == self.last_run.date():
+                return now >= target_time
 
+            # Sudah backup pada tanggal ini
+            if now.date() == self.last_run.date():
                 return False
 
-            return (
-                now.hour == self.schedule_hour
-                and now.minute
-                >= self.schedule_minute
+            target_time = now.replace(
+                hour=self.schedule_hour,
+                minute=self.schedule_minute,
+                second=0,
+                microsecond=0,
             )
+
+            return now >= target_time
 
         # ======================================================
         # MONTHLY
@@ -837,40 +1270,50 @@ class DatabaseBackup(models.Model):
 
         if self.schedule_type == 'monthly':
 
+            max_day = monthrange(
+                now.year,
+                now.month,
+            )[1]
+
             target_day = min(
                 self.schedule_day,
-                monthrange(
-                    now.year,
-                    now.month,
-                )[1],
+                max_day,
             )
 
+            # Bukan tanggal yang dijadwalkan
             if now.day != target_day:
-
                 return False
 
+            # Belum pernah backup
             if not self.last_run:
 
-                return (
-                    now.hour == self.schedule_hour
-                    and now.minute
-                    >= self.schedule_minute
+                target_time = now.replace(
+                    hour=self.schedule_hour,
+                    minute=self.schedule_minute,
+                    second=0,
+                    microsecond=0,
                 )
 
+                return now >= target_time
+
+            # Sudah backup pada bulan ini
             if (
                 now.year == self.last_run.year
                 and now.month == self.last_run.month
             ):
-
                 return False
 
-            return (
-                now.hour == self.schedule_hour
-                and now.minute
-                >= self.schedule_minute
+            target_time = now.replace(
+                hour=self.schedule_hour,
+                minute=self.schedule_minute,
+                second=0,
+                microsecond=0,
             )
 
+            return now >= target_time
+
         return False
+
 
     # ==========================================================
     # CALCULATE NEXT RUN
@@ -893,9 +1336,7 @@ class DatabaseBackup(models.Model):
 
         if from_datetime is None:
 
-            from_datetime = (
-                fields.Datetime.now()
-            )
+            from_datetime = fields.Datetime.now()
 
         # ======================================================
         # EVERY 3 MINUTES
@@ -950,8 +1391,8 @@ class DatabaseBackup(models.Model):
                 - from_datetime.weekday()
             ) % 7
 
+            # Selalu jadwalkan ke minggu berikutnya
             if days_ahead == 0:
-
                 days_ahead = 7
 
             next_run = (
@@ -974,7 +1415,6 @@ class DatabaseBackup(models.Model):
             month = from_datetime.month + 1
 
             if month > 12:
-
                 month = 1
                 year += 1
 
@@ -1008,7 +1448,14 @@ class DatabaseBackup(models.Model):
                 'next_run': next_run,
             })
 
+        else:
+
+            self.write({
+                'next_run': False,
+            })
+
         return next_run
+
 
     # ==========================================================
     # ONCHANGE SCHEDULE
@@ -1026,6 +1473,10 @@ class DatabaseBackup(models.Model):
 
         for record in self:
 
+            # --------------------------------------------------
+            # MANUAL / INACTIVE
+            # --------------------------------------------------
+
             if (
                 not record.active
                 or record.schedule_type == 'manual'
@@ -1037,9 +1488,9 @@ class DatabaseBackup(models.Model):
 
             now = fields.Datetime.now()
 
-            # --------------------------------------------------
+            # ==================================================
             # EVERY 3 MINUTES
-            # --------------------------------------------------
+            # ==================================================
 
             if record.schedule_type == '3_minutes':
 
@@ -1047,9 +1498,9 @@ class DatabaseBackup(models.Model):
                     now + timedelta(minutes=3)
                 )
 
-            # --------------------------------------------------
+            # ==================================================
             # HOURLY
-            # --------------------------------------------------
+            # ==================================================
 
             elif record.schedule_type == 'hourly':
 
@@ -1057,24 +1508,30 @@ class DatabaseBackup(models.Model):
                     now + timedelta(hours=1)
                 )
 
-            # --------------------------------------------------
+            # ==================================================
             # DAILY
-            # --------------------------------------------------
+            # ==================================================
 
             elif record.schedule_type == 'daily':
 
-                record.next_run = (
-                    now + timedelta(days=1)
-                ).replace(
+                target = now.replace(
                     hour=record.schedule_hour,
                     minute=record.schedule_minute,
                     second=0,
                     microsecond=0,
                 )
 
-            # --------------------------------------------------
+                # Jika waktu hari ini sudah lewat,
+                # jadwalkan besok.
+                if target <= now:
+
+                    target += timedelta(days=1)
+
+                record.next_run = target
+
+            # ==================================================
             # WEEKLY
-            # --------------------------------------------------
+            # ==================================================
 
             elif record.schedule_type == 'weekly':
 
@@ -1087,12 +1544,9 @@ class DatabaseBackup(models.Model):
                     - now.weekday()
                 ) % 7
 
-                if days_ahead == 0:
-
-                    days_ahead = 7
-
-                record.next_run = (
-                    now + timedelta(days=days_ahead)
+                target = (
+                    now
+                    + timedelta(days=days_ahead)
                 ).replace(
                     hour=record.schedule_hour,
                     minute=record.schedule_minute,
@@ -1100,36 +1554,70 @@ class DatabaseBackup(models.Model):
                     microsecond=0,
                 )
 
-            # --------------------------------------------------
+                # Jika target hari ini tetapi jamnya
+                # sudah lewat, jadwalkan minggu depan.
+                if target <= now:
+
+                    target += timedelta(days=7)
+
+                record.next_run = target
+
+            # ==================================================
             # MONTHLY
-            # --------------------------------------------------
+            # ==================================================
 
             elif record.schedule_type == 'monthly':
 
                 year = now.year
-                month = now.month + 1
-
-                if month > 12:
-
-                    month = 1
-                    year += 1
+                month = now.month
 
                 max_day = monthrange(
                     year,
                     month,
                 )[1]
 
-                day = min(
+                target_day = min(
                     record.schedule_day,
                     max_day,
                 )
 
-                record.next_run = now.replace(
-                    year=year,
-                    month=month,
-                    day=day,
+                target = now.replace(
+                    day=target_day,
                     hour=record.schedule_hour,
                     minute=record.schedule_minute,
                     second=0,
                     microsecond=0,
                 )
+
+                # Jika tanggal/waktu bulan ini sudah lewat,
+                # pindahkan ke bulan berikutnya.
+                if target <= now:
+
+                    month += 1
+
+                    if month > 12:
+
+                        month = 1
+                        year += 1
+
+                    max_day = monthrange(
+                        year,
+                        month,
+                    )[1]
+
+                    target_day = min(
+                        record.schedule_day,
+                        max_day,
+                    )
+
+                    target = now.replace(
+                        year=year,
+                        month=month,
+                        day=target_day,
+                        hour=record.schedule_hour,
+                        minute=record.schedule_minute,
+                        second=0,
+                        microsecond=0,
+                    )
+
+                record.next_run = target

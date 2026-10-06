@@ -35,8 +35,9 @@
 
             <form string="Database Backup">
                 <header>
-                    <field name="state" widget="statusbar" statusbar_visible="draft,running,done,failed"/>
-                    <button name="action_start" string="Start" type="object" class="btn-primary" invisible="state == 'running'" icon="fa-play"/>
+                    <field name="state" widget="statusbar" statusbar_visible="draft,queued,running,done,failed"/>
+                    <button name="action_start" string="Start" type="object" class="oe_highlight" invisible="state in ('queued', 'running', 'done')" icon="fa-play"/>
+                    <button name="action_stop" string="Stop" type="object" class="btn-danger" invisible="state not in ('queued', 'running', 'done')" icon="fa-stop"/>
                 </header>
 
                 <sheet>
@@ -64,6 +65,7 @@
                         </group>
                     </group>
 
+                    <group>
                         <group string="Schedule">
                             <field name="active"/>
                             <field name="schedule_type"/>
@@ -72,11 +74,16 @@
                             <field name="schedule_weekday" invisible="schedule_type != 'weekly'"/>
                             <field name="schedule_day" invisible="schedule_type != 'monthly'"/>
                         </group>
+                        <group string="Retention">
+                            <field name="retention_enabled"/>
+                            <field name="retention_count" invisible="not retention_enabled"/>
+                        </group>
 
                         <group string="Execution">
                             <field name="last_run"/>
                             <field name="next_run"/>
                         </group>
+                    </group>
 
                     <notebook>
                         <page string="Backup Files">

@@ -1,7 +1,6 @@
 import logging
 import os
 import shutil
-import socket
 from ftplib import FTP
 
 
@@ -10,7 +9,8 @@ _logger = logging.getLogger(__name__)
 
 class StorageService:
     """
-    Handle uploading backup files to configured storage services.
+    Handle uploading and deleting backup files
+    from configured storage services.
 
     Supported:
         - Local
@@ -28,7 +28,6 @@ class StorageService:
     # ==========================================================
 
     # Progress log interval for large file uploads.
-    # 100 MB is useful for monitoring without flooding the log.
     SFTP_PROGRESS_INTERVAL = 100 * 1024 * 1024
 
     # Connection timeout.
@@ -82,7 +81,9 @@ class StorageService:
 
         service_type = storage.service_type
 
-        file_size = os.path.getsize(file_path)
+        file_size = os.path.getsize(
+            file_path
+        )
 
         file_size_mb = (
             file_size / (1024 * 1024)
@@ -152,7 +153,100 @@ class StorageService:
         )
 
     # ==========================================================
-    # LOCAL
+    # DELETE BACKUP FILE
+    # ==========================================================
+
+    @staticmethod
+    def delete(
+        storage,
+        filename,
+    ):
+        """
+        Delete backup file from configured storage.
+
+        Supported:
+            - Local
+            - NAS
+            - SFTP
+            - FTP
+
+        IMPORTANT:
+            The physical backup file is deleted first.
+
+            The database backup log should only be deleted
+            after this method returns True.
+        """
+
+        if not storage:
+            raise ValueError(
+                "Storage configuration is required."
+            )
+
+        if not filename:
+            raise ValueError(
+                "Backup filename is required."
+            )
+
+        service_type = storage.service_type
+
+        _logger.info(
+            "Deleting backup file. "
+            "Storage=%s Type=%s Filename=%s",
+            storage.name,
+            service_type,
+            filename,
+        )
+
+        # ------------------------------------------------------
+        # LOCAL
+        # ------------------------------------------------------
+
+        if service_type == "local":
+
+            return StorageService._delete_local(
+                storage,
+                filename,
+            )
+
+        # ------------------------------------------------------
+        # NAS
+        # ------------------------------------------------------
+
+        if service_type == "nas":
+
+            return StorageService._delete_nas(
+                storage,
+                filename,
+            )
+
+        # ------------------------------------------------------
+        # SFTP
+        # ------------------------------------------------------
+
+        if service_type == "sftp":
+
+            return StorageService._delete_sftp(
+                storage,
+                filename,
+            )
+
+        # ------------------------------------------------------
+        # FTP
+        # ------------------------------------------------------
+
+        if service_type == "ftp":
+
+            return StorageService._delete_ftp(
+                storage,
+                filename,
+            )
+
+        raise ValueError(
+            f"Unsupported storage service: {service_type}"
+        )
+
+    # ==========================================================
+    # LOCAL UPLOAD
     # ==========================================================
 
     @staticmethod
@@ -233,7 +327,104 @@ class StorageService:
         return True
 
     # ==========================================================
-    # NAS
+    # LOCAL DELETE
+    # ==========================================================
+
+    @staticmethod
+    def _delete_local(
+        storage,
+        filename,
+    ):
+        """
+        Delete backup file from local filesystem.
+        """
+
+        if not storage.local_path:
+            raise ValueError(
+                "Local Path is required."
+            )
+
+        folder = os.path.abspath(
+            os.path.expanduser(
+                storage.local_path
+            )
+        )
+
+        file_path = os.path.join(
+            folder,
+            filename,
+        )
+
+        # ------------------------------------------------------
+        # File already does not exist
+        # ------------------------------------------------------
+
+        if not os.path.isfile(
+            file_path
+        ):
+
+            _logger.warning(
+                "Local backup file does not exist. "
+                "Filename=%s Path=%s",
+                filename,
+                file_path,
+            )
+
+            # Already deleted = success.
+            return True
+
+        try:
+
+            file_size = os.path.getsize(
+                file_path
+            )
+
+            _logger.info(
+                "Deleting local backup. "
+                "Path=%s Size=%.2f MB",
+                file_path,
+                file_size / (1024 * 1024),
+            )
+
+            os.remove(
+                file_path
+            )
+
+            # --------------------------------------------------
+            # VERIFY DELETION
+            # --------------------------------------------------
+
+            if os.path.exists(
+                file_path
+            ):
+
+                raise IOError(
+                    "Local backup file still exists "
+                    f"after deletion: {file_path}"
+                )
+
+            _logger.info(
+                "Local backup deleted successfully. "
+                "Filename=%s Size=%.2f MB",
+                filename,
+                file_size / (1024 * 1024),
+            )
+
+            return True
+
+        except Exception:
+
+            _logger.exception(
+                "Failed to delete local backup. "
+                "Filename=%s Path=%s",
+                filename,
+                file_path,
+            )
+
+            raise
+
+    # ==========================================================
+    # NAS UPLOAD
     # ==========================================================
 
     @staticmethod
@@ -322,7 +513,118 @@ class StorageService:
         return True
 
     # ==========================================================
-    # SFTP
+    # NAS DELETE
+    # ==========================================================
+
+    @staticmethod
+    def _delete_nas(
+        storage,
+        filename,
+    ):
+        """
+        Delete backup file from mounted NAS filesystem.
+        """
+
+        if not storage.local_path:
+            raise ValueError(
+                "NAS Path is required."
+            )
+
+        folder = os.path.abspath(
+            os.path.expanduser(
+                storage.local_path
+            )
+        )
+
+        if not os.path.exists(
+            folder
+        ):
+            raise ValueError(
+                f"NAS path does not exist: {folder}"
+            )
+
+        if not os.path.isdir(
+            folder
+        ):
+            raise ValueError(
+                f"NAS path is not a directory: {folder}"
+            )
+
+        file_path = os.path.join(
+            folder,
+            filename,
+        )
+
+        # ------------------------------------------------------
+        # File already does not exist
+        # ------------------------------------------------------
+
+        if not os.path.isfile(
+            file_path
+        ):
+
+            _logger.warning(
+                "NAS backup file does not exist. "
+                "Filename=%s Path=%s",
+                filename,
+                file_path,
+            )
+
+            # Already deleted = success.
+            return True
+
+        try:
+
+            file_size = os.path.getsize(
+                file_path
+            )
+
+            _logger.info(
+                "Deleting NAS backup. "
+                "Path=%s Size=%.2f MB",
+                file_path,
+                file_size / (1024 * 1024),
+            )
+
+            os.remove(
+                file_path
+            )
+
+            # --------------------------------------------------
+            # VERIFY DELETION
+            # --------------------------------------------------
+
+            if os.path.exists(
+                file_path
+            ):
+
+                raise IOError(
+                    "NAS backup file still exists "
+                    f"after deletion: {file_path}"
+                )
+
+            _logger.info(
+                "NAS backup deleted successfully. "
+                "Filename=%s Size=%.2f MB",
+                filename,
+                file_size / (1024 * 1024),
+            )
+
+            return True
+
+        except Exception:
+
+            _logger.exception(
+                "Failed to delete NAS backup. "
+                "Filename=%s Path=%s",
+                filename,
+                file_path,
+            )
+
+            raise
+
+    # ==========================================================
+    # SFTP UPLOAD
     # ==========================================================
 
     @staticmethod
@@ -538,9 +840,6 @@ class StorageService:
                 # IMPORTANT
                 #
                 # putfo() streams the file.
-                #
-                # file_size tells Paramiko the expected size
-                # and avoids unnecessary file handling.
                 # --------------------------------------------------
 
                 sftp.putfo(
@@ -616,6 +915,7 @@ class StorageService:
             if sftp:
 
                 try:
+
                     sftp.close()
 
                     _logger.info(
@@ -636,11 +936,8 @@ class StorageService:
             if ssh:
 
                 try:
-                    ssh.close()
 
-                    _logger.info(
-                        "SSH connection closed."
-                    )
+                    ssh.close()
 
                 except Exception as close_error:
 
@@ -648,6 +945,214 @@ class StorageService:
                         "Failed to close SSH connection: %s",
                         close_error,
                     )
+
+    # ==========================================================
+    # SFTP DELETE
+    # ==========================================================
+
+    @staticmethod
+    def _delete_sftp(
+        storage,
+        filename,
+    ):
+        """
+        Delete backup file from SFTP server.
+        """
+
+        if not storage.host:
+            raise ValueError(
+                "SFTP Host is required."
+            )
+
+        if not storage.username:
+            raise ValueError(
+                "SFTP Username is required."
+            )
+
+        if not storage.password:
+            raise ValueError(
+                "SFTP Password is required."
+            )
+
+        port = storage.port or 22
+
+        remote_path = (
+            storage.remote_path or "/"
+        )
+
+        import paramiko
+
+        ssh = None
+        sftp = None
+
+        remote_file = (
+            remote_path.rstrip("/")
+            + "/"
+            + filename
+        )
+
+        try:
+
+            _logger.info(
+                "Connecting to SFTP for deletion. "
+                "Host=%s Port=%s",
+                storage.host,
+                port,
+            )
+
+            ssh = paramiko.SSHClient()
+
+            ssh.set_missing_host_key_policy(
+                paramiko.AutoAddPolicy()
+            )
+
+            ssh.connect(
+                hostname=storage.host,
+                port=port,
+                username=storage.username,
+                password=storage.password,
+                timeout=StorageService.SFTP_CONNECT_TIMEOUT,
+                banner_timeout=StorageService.SFTP_CONNECT_TIMEOUT,
+                auth_timeout=StorageService.SFTP_CONNECT_TIMEOUT,
+                look_for_keys=False,
+                allow_agent=False,
+            )
+
+            # ==================================================
+            # SOCKET TIMEOUT
+            # ==================================================
+
+            try:
+
+                transport = ssh.get_transport()
+
+                if transport:
+
+                    sock = transport.sock
+
+                    if sock:
+
+                        sock.settimeout(
+                            StorageService.SFTP_SOCKET_TIMEOUT
+                        )
+
+            except Exception as timeout_error:
+
+                _logger.warning(
+                    "Could not configure SFTP socket timeout "
+                    "for deletion: %s",
+                    timeout_error,
+                )
+
+            # ==================================================
+            # OPEN SFTP
+            # ==================================================
+
+            sftp = ssh.open_sftp()
+
+            # ==================================================
+            # CHECK FILE
+            # ==================================================
+
+            try:
+
+                remote_stat = sftp.stat(
+                    remote_file
+                )
+
+                remote_size = remote_stat.st_size
+
+            except IOError:
+
+                _logger.warning(
+                    "SFTP backup file does not exist. "
+                    "Remote=%s",
+                    remote_file,
+                )
+
+                # Already deleted = success.
+                return True
+
+            # ==================================================
+            # DELETE
+            # ==================================================
+
+            _logger.info(
+                "Deleting SFTP backup. "
+                "Remote=%s Size=%.2f MB",
+                remote_file,
+                remote_size / (1024 * 1024),
+            )
+
+            sftp.remove(
+                remote_file
+            )
+
+            # ==================================================
+            # VERIFY DELETION
+            # ==================================================
+
+            try:
+
+                sftp.stat(
+                    remote_file
+                )
+
+            except IOError:
+
+                # Expected:
+                # File no longer exists.
+                pass
+
+            else:
+
+                raise IOError(
+                    "SFTP backup file still exists "
+                    f"after deletion: {remote_file}"
+                )
+
+            _logger.info(
+                "SFTP backup deleted successfully. "
+                "Remote=%s Size=%.2f MB",
+                remote_file,
+                remote_size / (1024 * 1024),
+            )
+
+            return True
+
+        except Exception:
+
+            _logger.exception(
+                "Failed to delete SFTP backup. "
+                "Host=%s Port=%s Remote=%s",
+                storage.host,
+                port,
+                remote_file,
+            )
+
+            raise
+
+        finally:
+
+            # ==================================================
+            # CLOSE SFTP
+            # ==================================================
+
+            if sftp:
+                try:
+                    sftp.close()
+                except Exception:
+                    pass
+
+            # ==================================================
+            # CLOSE SSH
+            # ==================================================
+
+            if ssh:
+                try:
+                    ssh.close()
+                except Exception:
+                    pass
 
     # ==========================================================
     # SFTP DIRECTORY
@@ -725,7 +1230,7 @@ class StorageService:
                 )
 
     # ==========================================================
-    # FTP
+    # FTP UPLOAD
     # ==========================================================
 
     @staticmethod
@@ -856,17 +1361,133 @@ class StorageService:
             )
 
             raise
-
         finally:
+            try:
+                ftp.quit()
+            except Exception:
+                try:
+                    ftp.close()
+                except Exception:
+                    pass
+
+    # ==========================================================
+    # FTP DELETE
+    # ==========================================================
+
+    @staticmethod
+    def _delete_ftp(
+        storage,
+        filename,
+    ):
+        """
+        Delete backup file from FTP server.
+        """
+
+        if not storage.host:
+            raise ValueError(
+                "FTP Host is required."
+            )
+
+        if not storage.username:
+            raise ValueError(
+                "FTP Username is required."
+            )
+
+        if not storage.password:
+            raise ValueError(
+                "FTP Password is required."
+            )
+
+        port = storage.port or 21
+
+        ftp = FTP()
+
+        try:
+
+            _logger.info(
+                "Connecting to FTP for deletion. "
+                "Host=%s Port=%s",
+                storage.host,
+                port,
+            )
+
+            ftp.connect(
+                storage.host,
+                port,
+                timeout=StorageService.FTP_CONNECT_TIMEOUT,
+            )
+
+            ftp.login(
+                storage.username,
+                storage.password,
+            )
+
+            if storage.remote_path:
+
+                ftp.cwd(
+                    storage.remote_path
+                )
+
+            # ==================================================
+            # CHECK FILE
+            # ==================================================
 
             try:
 
-                ftp.quit()
+                remote_size = ftp.size(
+                    filename
+                )
 
             except Exception:
 
+                _logger.warning(
+                    "FTP backup file does not exist. "
+                    "Filename=%s",
+                    filename,
+                )
+
+                # Already deleted = success.
+                return True
+
+            # ==================================================
+            # DELETE
+            # ==================================================
+
+            _logger.info(
+                "Deleting FTP backup. "
+                "Filename=%s Size=%.2f MB",
+                filename,
+                remote_size / (1024 * 1024),
+            )
+
+            ftp.delete(
+                filename
+            )
+
+            _logger.info(
+                "FTP backup deleted successfully. "
+                "Filename=%s",
+                filename,
+            )
+
+            return True
+
+        except Exception:
+
+            _logger.exception(
+                "Failed to delete FTP backup. "
+                "Host=%s Port=%s Filename=%s",
+                storage.host,
+                port,
+                filename,
+            )
+
+            raise
+        finally:
+            try:
+                ftp.quit()
+            except Exception:
                 try:
                     ftp.close()
-
                 except Exception:
                     pass
